@@ -17,16 +17,12 @@
 import { existsSync } from 'fs';
 import * as _ from 'lodash';
 import { join } from 'path';
-import { LogType } from '../logger';
-import Logger from '../logger/Logger';
-import LoggerFactory from '../logger/LoggerFactory';
-import { Addresses, ConfigPreset, DockerCompose, DockerComposeService, DockerServicePreset } from '../model';
-import { BootstrapUtils } from './BootstrapUtils';
+import { Logger } from '../logger';
+import { Addresses, ConfigPreset, DockerCompose, DockerComposeService, DockerServicePreset, FaucetPreset } from '../model';
+import { BootstrapUtils, Password } from './BootstrapUtils';
 import { ConfigLoader } from './ConfigLoader';
-
-export type ComposeParams = { target: string; user?: string; upgrade?: boolean; password?: string };
-
-const logger: Logger = LoggerFactory.getLogger(LogType.System);
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+export type ComposeParams = { target: string; user?: string; upgrade?: boolean; password?: Password };
 
 const targetNodesFolder = BootstrapUtils.targetNodesFolder;
 const targetDatabasesFolder = BootstrapUtils.targetDatabasesFolder;
@@ -54,8 +50,8 @@ export class ComposeService {
 
     private readonly configLoader: ConfigLoader;
 
-    constructor(private readonly root: string, protected readonly params: ComposeParams) {
-        this.configLoader = new ConfigLoader();
+    constructor(private readonly logger: Logger, protected readonly params: ComposeParams) {
+        this.configLoader = new ConfigLoader(logger);
     }
 
     public resolveDebugOptions(dockerComposeDebugMode: boolean, dockerComposeServiceDebugMode: boolean | undefined): any {
@@ -75,26 +71,26 @@ export class ComposeService {
         const target = join(currentDir, this.params.target);
         const targetDocker = join(target, `docker`);
         if (this.params.upgrade) {
-            BootstrapUtils.deleteFolder(targetDocker);
+            BootstrapUtils.deleteFolder(this.logger, targetDocker);
         }
         const dockerFile = join(targetDocker, 'docker-compose.yml');
         if (existsSync(dockerFile)) {
-            logger.info(dockerFile + ' already exist. Reusing. (run --upgrade to drop and upgrade)');
+            this.logger.info(dockerFile + ' already exist. Reusing. (run --upgrade to drop and upgrade)');
             return BootstrapUtils.loadYaml(dockerFile, false);
         }
 
         await BootstrapUtils.mkdir(targetDocker);
-        await BootstrapUtils.generateConfiguration(presetData, join(this.root, 'config', 'docker'), targetDocker);
+        await BootstrapUtils.generateConfiguration(presetData, join(BootstrapUtils.DEFAULT_ROOT_FOLDER, 'config', 'docker'), targetDocker);
 
         await BootstrapUtils.chmodRecursive(join(targetDocker, 'mongo'), 0o666);
 
-        const user: string | undefined = await BootstrapUtils.resolveDockerUserFromParam(this.params.user);
+        const user: string | undefined = await BootstrapUtils.resolveDockerUserFromParam(this.logger, this.params.user);
 
         const vol = (hostFolder: string, imageFolder: string, readOnly: boolean): string => {
             return `${hostFolder}:${imageFolder}:${readOnly ? 'ro' : 'rw'}`;
         };
 
-        logger.info(`Creating docker-compose.yml from last used profile.`);
+        this.logger.info(`Creating docker-compose.yml from last used profile.`);
 
         const services: (DockerComposeService | undefined)[] = [];
 
@@ -159,6 +155,7 @@ export class ComposeService {
 
         const nodeWorkingDirectory = '/symbol-workdir';
         const nodeCommandsDirectory = '/symbol-commands';
+        const nemesisSeed = presetData.seedDirectory;
         const restart = presetData.dockerComposeServiceRestart;
         await Promise.all(
             (presetData.nodes || [])
@@ -188,6 +185,7 @@ export class ComposeService {
                     const volumes = [
                         vol(`../${targetNodesFolder}/${n.name}`, nodeWorkingDirectory, false),
                         vol(`./server`, nodeCommandsDirectory, true),
+                        vol(`../nemesis/seed`, nodeWorkingDirectory + nemesisSeed.replace('./', '/'), true),
                     ];
                     const nodeService = await resolveService(n, {
                         user: serverDebugMode === debugFlag ? undefined : user, // if debug on, run as root
@@ -346,7 +344,9 @@ export class ComposeService {
         await Promise.all(
             (presetData.faucets || [])
                 .filter((d) => !d.excludeDockerService)
-                .map(async (n) => {
+                .map(async (n, index) => {
+                    const mosaicPreset = presetData.nemesis.mosaics[0];
+                    const fullName = `${presetData.baseNamespace}.${mosaicPreset.name}`;
                     // const nemesisPrivateKey = addresses?.mosaics?[0]?/;
                     services.push(
                         await resolveService(n, {
@@ -354,8 +354,8 @@ export class ComposeService {
                             image: presetData.symbolFaucetImage,
                             stop_signal: 'SIGINT',
                             environment: {
-                                FAUCET_PRIVATE_KEY:
-                                    n.environment?.FAUCET_PRIVATE_KEY || this.getMainAccountPrivateKey(passedAddresses) || '',
+                                NATIVE_CURRENCY_NAME: n.environment?.NATIVE_CURRENCY_NAME || fullName,
+                                FAUCET_PRIVATE_KEY: this.resolveFaucetPrivateKey(n, passedAddresses, index) || '',
                                 NATIVE_CURRENCY_ID: BootstrapUtils.toSimpleHex(
                                     n.environment?.NATIVE_CURRENCY_ID || presetData.currencyMosaicId || '',
                                 ),
@@ -392,12 +392,22 @@ export class ComposeService {
 
         dockerCompose = BootstrapUtils.pruneEmpty(dockerCompose);
         await BootstrapUtils.writeYaml(dockerFile, dockerCompose, undefined);
-        logger.info(`The docker-compose.yml file created ${dockerFile}`);
+        this.logger.info(`The docker-compose.yml file created ${dockerFile}`);
         return dockerCompose;
     }
 
-    private getMainAccountPrivateKey(passedAddresses: Addresses | undefined) {
+    private resolveFaucetPrivateKey(
+        faucetPreset: FaucetPreset,
+        passedAddresses: Addresses | undefined,
+        faucetIndex: number,
+    ): string | undefined {
+        if (faucetPreset.environment?.FAUCET_PRIVATE_KEY) {
+            return faucetPreset.environment?.FAUCET_PRIVATE_KEY;
+        }
+        if (faucetPreset.privateKey) {
+            return faucetPreset.privateKey;
+        }
         const addresses = passedAddresses ?? this.configLoader.loadExistingAddresses(this.params.target, this.params.password);
-        return addresses?.mosaics?.[0]?.accounts[0].privateKey;
+        return addresses?.faucets?.[faucetIndex]?.account?.privateKey || addresses?.mosaics?.[0]?.accounts[0].privateKey;
     }
 }

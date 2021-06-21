@@ -15,11 +15,10 @@
  */
 
 import { Command, flags } from '@oclif/command';
-import { LogType } from '../logger';
-import Logger from '../logger/Logger';
-import LoggerFactory from '../logger/LoggerFactory';
-import { BootstrapUtils, CommandUtils, ConfigLoader, CryptoUtils, RemoteNodeService, VotingService } from '../service';
-const logger: Logger = LoggerFactory.getLogger(LogType.System);
+import { IOptionFlag } from '@oclif/command/lib/flags';
+import { IBooleanFlag } from '@oclif/parser/lib/flags';
+import { BootstrapUtils, ConfigLoader, CryptoUtils, LoggerFactory, LogType, RemoteNodeService, VotingService } from '../';
+import { BootstrapCommandUtils } from '../service';
 
 export default class UpdateVotingKeys extends Command {
     static description = `It updates the voting files containing the voting keys when required.
@@ -34,9 +33,14 @@ When a new voting file is created, Bootstrap will advise running the \`link\` co
 
     static examples = [`$ symbol-bootstrap updateVotingKeys`];
 
-    static flags = {
-        help: CommandUtils.helpFlag,
-        target: CommandUtils.targetFlag,
+    static flags: {
+        help: IBooleanFlag<void>;
+        target: IOptionFlag<string>;
+        user: IOptionFlag<string>;
+        finalizationEpoch: IOptionFlag<number | undefined>;
+    } = {
+        help: BootstrapCommandUtils.helpFlag,
+        target: BootstrapCommandUtils.targetFlag,
         user: flags.string({
             char: 'u',
             description: `User used to run docker images when creating the the voting key files. "${BootstrapUtils.CURRENT_USER}" means the current user.`,
@@ -49,16 +53,18 @@ When a new voting file is created, Bootstrap will advise running the \`link\` co
 
     public async run(): Promise<void> {
         const { flags } = this.parse(UpdateVotingKeys);
-        BootstrapUtils.showBanner();
+        BootstrapCommandUtils.showBanner();
         const password = false;
         const target = flags.target;
-        const configLoader = new ConfigLoader();
+        const logger = LoggerFactory.getLogger(LogType.ConsoleLog);
+        const configLoader = new ConfigLoader(logger);
         const addressesLocation = configLoader.getGeneratedAddressLocation(target);
         const presetData = configLoader.loadExistingPresetData(target, password);
         const addresses = configLoader.loadExistingAddresses(target, password);
         const privateKeySecurityMode = CryptoUtils.getPrivateKeySecurityMode(presetData.privateKeySecurityMode);
 
-        const finalizationEpoch = flags.finalizationEpoch || (await new RemoteNodeService().resolveCurrentFinalizationEpoch(presetData));
+        const finalizationEpoch =
+            flags.finalizationEpoch || (await new RemoteNodeService(logger).resolveCurrentFinalizationEpoch(presetData, false));
 
         const votingKeyUpgrade = (
             await Promise.all(
@@ -67,7 +73,7 @@ When a new voting file is created, Bootstrap will advise running the \`link\` co
                     if (!nodeAccount) {
                         throw new Error(`There is not node in addresses at index ${index}`);
                     }
-                    return new VotingService({
+                    return new VotingService(logger, {
                         target,
                         user: flags.user,
                     }).run(presetData, nodeAccount, nodePreset, finalizationEpoch, true, false);

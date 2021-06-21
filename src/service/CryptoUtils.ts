@@ -141,6 +141,10 @@ export class CryptoUtils {
     }
 
     private static isPrivateKeyField(value: any, fieldName: string | undefined) {
-        return _.isString(value) && fieldName && fieldName.toLowerCase().endsWith('privatekey');
+        return (
+            _.isString(value) &&
+            fieldName &&
+            (fieldName.toLowerCase().endsWith('privatekey') || fieldName.toLowerCase().endsWith('private_key'))
+        );
     }
 }
