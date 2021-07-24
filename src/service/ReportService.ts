@@ -17,7 +17,7 @@
 import { promises as fsPromises, readFileSync } from 'fs';
 import * as _ from 'lodash';
 import { join } from 'path';
-import { Logger } from '../logger/Logger';
+import { Logger } from '../logger';
 import { ConfigPreset } from '../model';
 import { BootstrapUtils } from './BootstrapUtils';
 import { ConfigLoader } from './ConfigLoader';
@@ -94,8 +94,7 @@ export class ReportService {
     }
 
     private async createReportsPerNode(presetData: ConfigPreset): Promise<ReportNode[]> {
-        const workingDir = process.cwd();
-        const target = join(workingDir, this.params.target);
+        const target = this.params.target;
         const descriptions = await BootstrapUtils.loadYaml(join(BootstrapUtils.DEFAULT_ROOT_FOLDER, 'presets', 'descriptions.yml'), false);
         const promises: Promise<ReportNode>[] = (presetData.nodes || []).map(async (n) => {
             const resourcesFolder = join(BootstrapUtils.getTargetNodesFolder(target, false, n.name), 'server-config', 'resources');

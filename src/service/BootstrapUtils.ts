@@ -32,7 +32,7 @@ import { get } from 'https';
 import * as yaml from 'js-yaml';
 import * as _ from 'lodash';
 import { totalmem } from 'os';
-import { basename, dirname, join, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, resolve as pathResolve } from 'path';
 import { Convert, DtoMapping, NetworkType } from 'symbol-sdk';
 import * as util from 'util';
 import { Logger } from '../logger';
@@ -251,7 +251,7 @@ export class BootstrapUtils {
     }
 
     public static resolveRootFolder(): string {
-        const rootFolder = resolve(__dirname, '../..');
+        const rootFolder = pathResolve(__dirname, '../..');
         if (!existsSync(join(rootFolder, 'presets', 'shared.yml'))) {
             throw new Error(`Root Folder ${rootFolder} does not look right!`);
         }
@@ -767,10 +767,6 @@ export class BootstrapUtils {
                 return 'public';
             case NetworkType.TEST_NET:
                 return 'public-test';
-            case NetworkType.MIJIN:
-                return 'mijin';
-            case NetworkType.MIJIN_TEST:
-                return 'mijin-test';
             case NetworkType.PRIVATE:
                 return 'private';
             case NetworkType.PRIVATE_TEST:
@@ -785,10 +781,6 @@ export class BootstrapUtils {
                 return 'public';
             case NetworkType.TEST_NET:
                 return 'publicTest';
-            case NetworkType.MIJIN:
-                return 'mijin';
-            case NetworkType.MIJIN_TEST:
-                return 'mijinTest';
             case NetworkType.PRIVATE:
                 return 'private';
             case NetworkType.PRIVATE_TEST:
@@ -831,6 +823,14 @@ export class BootstrapUtils {
         const seedIndex = join(nemesisSeedFolder, 'index.dat');
         if (!existsSync(seedIndex)) {
             throw new KnownError(`File ${seedIndex} doesn't exist! ${message}`);
+        }
+    }
+
+    public static resolveWorkingDirPath(workingDir: string, path: string): string {
+        if (isAbsolute(path)) {
+            return path;
+        } else {
+            return join(workingDir, path);
         }
     }
 }

@@ -115,6 +115,16 @@ describe('BootstrapUtils', () => {
         );
     });
 
+    it('Bootstrap.resolveWorkingDirPath', function () {
+        expect(BootstrapUtils.resolveWorkingDirPath(BootstrapUtils.defaultWorkingDir, '../some/path')).to.be.eq('../some/path');
+        expect(BootstrapUtils.resolveWorkingDirPath(BootstrapUtils.defaultWorkingDir, 'some/path')).to.be.eq('some/path');
+        expect(BootstrapUtils.resolveWorkingDirPath(BootstrapUtils.defaultWorkingDir, '/some/path')).to.be.eq('/some/path');
+
+        expect(BootstrapUtils.resolveWorkingDirPath('/my/absolute/workingdir', '../some/path')).to.be.eq('/my/absolute/some/path');
+        expect(BootstrapUtils.resolveWorkingDirPath('/my/absolute/workingdir', 'some/path')).to.be.eq('/my/absolute/workingdir/some/path');
+        expect(BootstrapUtils.resolveWorkingDirPath('/my/absolute/workingdir', '/some/path')).to.be.eq('/some/path');
+    });
+
     it('BootstrapUtils.computerMemory', async () => {
         const totalMemory = totalmem();
         expect(totalMemory).to.be.gt(1024 * 1024);

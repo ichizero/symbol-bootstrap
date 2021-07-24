@@ -245,8 +245,9 @@ export class ConfigService {
             if (!presetData.nemesisSeedFolder) {
                 return undefined;
             }
-            if (existsSync(join(this.params.workingDir, presetData.nemesisSeedFolder, '00000', '00001.dat'))) {
-                return join(this.params.workingDir, presetData.nemesisSeedFolder);
+            const nemesisSeedFolder = BootstrapUtils.resolveWorkingDirPath(this.params.workingDir, presetData.nemesisSeedFolder);
+            if (existsSync(join(nemesisSeedFolder, '00000', '00001.dat'))) {
+                return nemesisSeedFolder;
             }
             return presetData.nemesisSeedFolder;
         };

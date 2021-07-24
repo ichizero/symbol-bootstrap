@@ -46,10 +46,6 @@ export class ConfigLoader {
     ): Promise<Addresses> {
         const networkType = presetData.networkType;
 
-        if (!networkType) {
-            throw new Error('Network Type could not be resolved. Have your provided the right --preset?');
-        }
-
         const addresses: Addresses = {
             version: this.getAddressesMigration(networkType).length + 1,
             networkType: networkType,
@@ -61,47 +57,31 @@ export class ConfigLoader {
         };
 
         //Sync address is generated on demand only
-        const getDefaultSyncAddress = (): string => {
+        const resolveSyncAddress = (providedAddress: string | undefined): string => {
+            if (providedAddress) {
+                return Address.createFromRawAddress(providedAddress).plain();
+            }
             addresses.sinkAddress = addresses.sinkAddress || Account.generateNewAccount(networkType).address.plain();
             return addresses.sinkAddress;
         };
 
-        if (presetData.nodes) {
-            addresses.nodes = await this.generateNodeAccounts(accountResolver, oldAddresses, presetData, networkType);
-        }
-        if (!presetData.harvestNetworkFeeSinkAddress) {
-            presetData.harvestNetworkFeeSinkAddress = getDefaultSyncAddress();
-        }
-        if (!presetData.mosaicRentalFeeSinkAddress) {
-            presetData.mosaicRentalFeeSinkAddress = getDefaultSyncAddress();
-        }
-        if (!presetData.namespaceRentalFeeSinkAddress) {
-            presetData.namespaceRentalFeeSinkAddress = getDefaultSyncAddress();
-        }
+        presetData.harvestNetworkFeeSinkAddress = resolveSyncAddress(presetData.harvestNetworkFeeSinkAddress);
+        presetData.mosaicRentalFeeSinkAddress = resolveSyncAddress(presetData.mosaicRentalFeeSinkAddress);
+        presetData.namespaceRentalFeeSinkAddress = resolveSyncAddress(presetData.namespaceRentalFeeSinkAddress);
         presetData.networkIdentifier = BootstrapUtils.getNetworkIdentifier(networkType);
         presetData.networkName = BootstrapUtils.getNetworkName(networkType);
-        if (!presetData.nemesisGenerationHashSeed) {
-            presetData.nemesisGenerationHashSeed = addresses.nemesisGenerationHashSeed;
-        }
-        const privateKeySecurityMode = CryptoUtils.getPrivateKeySecurityMode(presetData.privateKeySecurityMode);
+        presetData.nemesisGenerationHashSeed = addresses.nemesisGenerationHashSeed;
+        addresses.nodes = await this.generateNodeAccounts(accountResolver, oldAddresses, presetData, networkType);
+
         const shouldCreateNemesis = ConfigLoader.shouldCreateNemesis(presetData);
         if (shouldCreateNemesis) {
-            const signerPrivateKey =
-                presetData.nemesis.nemesisSignerPrivateKey ||
-                oldAddresses?.nemesisSigner?.privateKey ||
-                Account.generateNewAccount(networkType).privateKey;
-
-            const signerPublicKey = presetData.nemesisSignerPublicKey || oldAddresses?.nemesisSigner?.publicKey;
-            addresses.nemesisSigner = ConfigLoader.toConfigFromKeys(networkType, signerPublicKey, signerPrivateKey);
-
-            if (!addresses.nemesisSigner) {
-                throw new Error('Nemesis Signer should be resolved!');
-            }
-            if (!addresses.nemesisSigner.privateKey) {
+            const nemesisSigner = this.resolveNemesisAccount(presetData, oldAddresses);
+            if (!nemesisSigner.privateKey) {
                 throw new Error('Nemesis Signer Private Key should be resolved!');
             }
-            presetData.nemesisSignerPublicKey = addresses.nemesisSigner.publicKey;
-            presetData.nemesis.nemesisSignerPrivateKey = addresses.nemesisSigner.privateKey;
+            addresses.nemesisSigner = nemesisSigner;
+            presetData.nemesisSignerPublicKey = nemesisSigner.publicKey;
+            presetData.nemesis.nemesisSignerPrivateKey = nemesisSigner.privateKey;
         }
 
         const nemesisSignerAddress = Address.createFromPublicKey(presetData.nemesisSignerPublicKey, networkType);
@@ -129,98 +109,115 @@ export class ConfigLoader {
                 addresses.mosaics = oldAddresses.mosaics;
                 presetData.nemesis = oldPresetData.nemesis;
             } else {
-                if (presetData.nemesis.mosaics) {
-                    const mosaics: MosaicAccounts[] = [];
-                    presetData.nemesis.mosaics.forEach((m, mosaicIndex) => {
-                        function sum(distribution: { amount: number; address: string }[]) {
-                            return distribution
-                                .map((d, index) => {
-                                    if (d.amount < 0) {
-                                        throw new Error(
-                                            `Nemesis distribution balance cannot be less than 0. Mosaic ${m.name}, distribution address: ${
-                                                d.address
-                                            }, amount: ${d.amount}, index ${index}. \nDistributions are:\n${BootstrapUtils.toYaml(
-                                                distribution,
-                                            )}`,
-                                        );
-                                    }
-                                    return d.amount;
-                                })
-                                .reduce((a, b) => a + b, 0);
-                        }
-                        const accounts = this.generateAddresses(networkType, privateKeySecurityMode, m.accounts || 1);
-                        const id = MosaicId.createFromNonce(MosaicNonce.createFromNumber(mosaicIndex), nemesisSignerAddress).toHex();
-                        mosaics.push({
-                            id: id,
-                            name: m.name,
-                            accounts,
-                        });
-                        const getBalance = (nodeIndex: number): number | undefined => {
-                            const node = presetData?.nodes?.[nodeIndex];
-                            if (!node) {
-                                return undefined;
-                            }
-                            const balance = node?.balances?.[mosaicIndex];
-                            if (balance !== undefined) {
-                                return balance;
-                            }
-                            if (node.excludeFromNemesis) {
-                                return 0;
-                            }
-                            return undefined;
-                        };
-                        const providedDistributions = [...(m.currencyDistributions || [])];
-                        (addresses.nodes || []).forEach((node, index) => {
-                            const balance = getBalance(index);
-                            if (node.main && balance !== undefined)
-                                providedDistributions.push({
-                                    address: node.main.address,
-                                    amount: balance,
-                                });
-                        });
-                        const nodeMainAccounts = (addresses.nodes || []).filter(
-                            (node, index) => node.main && getBalance(index) === undefined,
-                        );
-                        const providedSupply = sum(providedDistributions);
-                        const remainingSupply = m.supply - providedSupply;
-                        const dynamicAccounts = accounts.length + nodeMainAccounts.length;
-                        const amountPerAccount = Math.floor(remainingSupply / dynamicAccounts);
-                        const maxHarvesterBalance =
-                            (presetData.nemesis.mosaics.length == 1 && mosaicIndex == 0) ||
-                            (presetData.nemesis.mosaics.length > 1 && mosaicIndex == 1)
-                                ? presetData.maxHarvesterBalance
-                                : Number.MAX_SAFE_INTEGER;
-                        const generatedAccounts = [
-                            ...accounts.map((a) => ({
-                                address: a.address,
-                                amount: amountPerAccount,
-                            })),
-                            ...nodeMainAccounts.map((n) => ({
-                                address: n.main!.address,
-                                amount: Math.min(maxHarvesterBalance, amountPerAccount),
-                            })),
-                        ];
-                        m.currencyDistributions = [...generatedAccounts, ...providedDistributions].filter((d) => d.amount > 0);
-
-                        const generatedSupply = sum(generatedAccounts.slice(1));
-
-                        m.currencyDistributions[0].amount = m.supply - providedSupply - generatedSupply;
-
-                        const supplied = sum(m.currencyDistributions);
-                        if (m.supply != supplied) {
-                            throw new Error(
-                                `Invalid nemgen total supplied value, expected ${
-                                    m.supply
-                                } but total is ${supplied}. \nDistributions are:\n${BootstrapUtils.toYaml(m.currencyDistributions)}`,
-                            );
-                        }
-                    });
-                    addresses.mosaics = mosaics;
-                }
+                addresses.mosaics = this.processNemesisBalances(presetData, addresses, nemesisSignerAddress);
             }
         }
 
         return addresses;
+    }
+
+    private resolveNemesisAccount(presetData: ConfigPreset, oldAddresses: Addresses | undefined): ConfigAccount {
+        const networkType = presetData.networkType;
+        const signerPrivateKey =
+            presetData.nemesis.nemesisSignerPrivateKey ||
+            oldAddresses?.nemesisSigner?.privateKey ||
+            Account.generateNewAccount(networkType).privateKey;
+
+        const signerPublicKey = presetData.nemesisSignerPublicKey || oldAddresses?.nemesisSigner?.publicKey;
+        const nemesisSigner = ConfigLoader.toConfigFromKeys(networkType, signerPublicKey, signerPrivateKey);
+
+        if (!nemesisSigner) {
+            throw new Error('Nemesis Signer should be resolved!');
+        }
+        return nemesisSigner;
+    }
+    private sum(distribution: { amount: number; address: string }[], mosaicName: string) {
+        return distribution
+            .map((d, index) => {
+                if (d.amount < 0) {
+                    throw new Error(
+                        `Nemesis distribution balance cannot be less than 0. Mosaic ${mosaicName}, distribution address: ${
+                            d.address
+                        }, amount: ${d.amount}, index ${index}. \nDistributions are:\n${BootstrapUtils.toYaml(distribution)}`,
+                    );
+                }
+                return d.amount;
+            })
+            .reduce((a, b) => a + b, 0);
+    }
+    private processNemesisBalances(presetData: ConfigPreset, addresses: Addresses, nemesisSignerAddress: Address): MosaicAccounts[] {
+        const privateKeySecurityMode = CryptoUtils.getPrivateKeySecurityMode(presetData.privateKeySecurityMode);
+        const networkType = presetData.networkType;
+        const mosaics: MosaicAccounts[] = [];
+        presetData.nemesis.mosaics.forEach((m, mosaicIndex) => {
+            const accounts = this.generateAddresses(networkType, privateKeySecurityMode, m.accounts || 1);
+            const id = MosaicId.createFromNonce(MosaicNonce.createFromNumber(mosaicIndex), nemesisSignerAddress).toHex();
+            mosaics.push({
+                id: id,
+                name: m.name,
+                accounts,
+            });
+            const getBalance = (nodeIndex: number): number | undefined => {
+                const node = presetData?.nodes?.[nodeIndex];
+                if (!node) {
+                    return undefined;
+                }
+                const balance = node?.balances?.[mosaicIndex];
+                if (balance !== undefined) {
+                    return balance;
+                }
+                if (node.excludeFromNemesis) {
+                    return 0;
+                }
+                return undefined;
+            };
+            const providedDistributions = [...(m.currencyDistributions || [])];
+            addresses.nodes?.forEach((node, index) => {
+                const balance = getBalance(index);
+                if (balance !== undefined)
+                    providedDistributions.push({
+                        address: node.main.address,
+                        amount: balance,
+                    });
+            });
+            const nodeMainAccounts = (addresses.nodes || []).filter((node, index) => node.main && getBalance(index) === undefined);
+            const providedSupply = this.sum(providedDistributions, m.name);
+            const remainingSupply = m.supply - providedSupply;
+            const dynamicAccounts = accounts.length + nodeMainAccounts.length;
+            const amountPerAccount = Math.floor(remainingSupply / dynamicAccounts);
+            const maxHarvesterBalance = this.getMaxHarvesterBalance(presetData, mosaicIndex);
+            const generatedAccounts = [
+                ...accounts.map((a) => ({
+                    address: a.address,
+                    amount: amountPerAccount,
+                })),
+                ...nodeMainAccounts.map((n) => ({
+                    address: n.main.address,
+                    amount: Math.min(maxHarvesterBalance, amountPerAccount),
+                })),
+            ];
+            m.currencyDistributions = [...generatedAccounts, ...providedDistributions].filter((d) => d.amount > 0);
+
+            const generatedSupply = this.sum(generatedAccounts.slice(1), m.name);
+
+            m.currencyDistributions[0].amount = m.supply - providedSupply - generatedSupply;
+
+            const supplied = this.sum(m.currencyDistributions, m.name);
+            if (m.supply != supplied) {
+                throw new Error(
+                    `Invalid nemgen total supplied value, expected ${
+                        m.supply
+                    } but total is ${supplied}. \nDistributions are:\n${BootstrapUtils.toYaml(m.currencyDistributions)}`,
+                );
+            }
+        });
+        return mosaics;
+    }
+
+    private getMaxHarvesterBalance(presetData: ConfigPreset, mosaicIndex: number) {
+        return (presetData.nemesis.mosaics.length == 1 && mosaicIndex == 0) || (presetData.nemesis.mosaics.length > 1 && mosaicIndex == 1)
+            ? presetData.maxHarvesterBalance
+            : Number.MAX_SAFE_INTEGER;
     }
 
     public static shouldCreateNemesis(presetData: ConfigPreset): boolean {
@@ -289,6 +286,28 @@ export class ConfigLoader {
         }
         return this.toConfigFromAccount(account);
     }
+    public resolveGenerateErrorMessage(keyName: KeyName, privateKeySecurityMode: PrivateKeySecurityMode): string | undefined {
+        if (
+            keyName === KeyName.Main &&
+            (privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_ALL ||
+                privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_MAIN_TRANSPORT ||
+                privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_MAIN)
+        ) {
+            return `Account ${keyName} cannot be generated when Private Key Security Mode is ${privateKeySecurityMode}. Account won't be stored anywhere!. Please use ${PrivateKeySecurityMode.ENCRYPT}, or provider your ${keyName} account with custom presets!`;
+        }
+        if (
+            keyName === KeyName.Transport &&
+            (privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_ALL ||
+                privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_MAIN_TRANSPORT)
+        ) {
+            return `Account ${keyName} cannot be generated when Private Key Security Mode is ${privateKeySecurityMode}. Account won't be stored anywhere!. Please use ${PrivateKeySecurityMode.ENCRYPT}, ${PrivateKeySecurityMode.PROMPT_MAIN}, or provider your ${keyName} account with custom presets!`;
+        } else {
+            if (privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_ALL) {
+                return `Account ${keyName} cannot be generated when Private Key Security Mode is ${privateKeySecurityMode}. Account won't be stored anywhere! Please use ${PrivateKeySecurityMode.ENCRYPT}, ${PrivateKeySecurityMode.PROMPT_MAIN}, ${PrivateKeySecurityMode.PROMPT_MAIN_TRANSPORT}, or provider your ${keyName} account with custom presets!`;
+            }
+        }
+        return undefined;
+    }
 
     public async generateAccount(
         accountResolver: AccountResolver,
@@ -312,14 +331,6 @@ export class ConfigLoader {
 
         const getAccountLog = (a: Account | PublicAccount) => `${keyName} Account ${a.address.plain()} Public Key ${a.publicKey} `;
 
-        if (oldAccount && !newAccount) {
-            this.logger.info(`Reusing ${getAccountLog(oldAccount)}...`);
-            return ConfigLoader.toConfigFromAccount(oldAccount);
-        }
-        if (!oldAccount && newAccount) {
-            this.logger.info(`${getAccountLog(newAccount)} has been provided`);
-            return ConfigLoader.toConfigFromAccount(newAccount);
-        }
         if (oldAccount && newAccount) {
             if (oldAccount.address.equals(newAccount.address)) {
                 this.logger.info(`Reusing ${getAccountLog(newAccount)}`);
@@ -328,32 +339,16 @@ export class ConfigLoader {
             this.logger.info(`Old ${getAccountLog(oldAccount)} has been changed. New ${getAccountLog(newAccount)} replaces it.`);
             return ConfigLoader.toConfigFromAccount(newAccount);
         }
-        //
-        //Generation validation.
-        const generateError = (): string | undefined => {
-            if (
-                keyName === KeyName.Main &&
-                (privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_ALL ||
-                    privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_MAIN_TRANSPORT ||
-                    privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_MAIN)
-            ) {
-                return `Account ${keyName} cannot be generated when Private Key Security Mode is ${privateKeySecurityMode}. Account won't be stored anywhere!. Please use ${PrivateKeySecurityMode.ENCRYPT}, or provider your ${keyName} account with custom presets!`;
-            }
-            if (
-                keyName === KeyName.Transport &&
-                (privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_ALL ||
-                    privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_MAIN_TRANSPORT)
-            ) {
-                return `Account ${keyName} cannot be generated when Private Key Security Mode is ${privateKeySecurityMode}. Account won't be stored anywhere!. Please use ${PrivateKeySecurityMode.ENCRYPT}, ${PrivateKeySecurityMode.PROMPT_MAIN}, or provider your ${keyName} account with custom presets!`;
-            } else {
-                if (privateKeySecurityMode === PrivateKeySecurityMode.PROMPT_ALL) {
-                    return `Account ${keyName} cannot be generated when Private Key Security Mode is ${privateKeySecurityMode}. Account won't be stored anywhere! Please use ${PrivateKeySecurityMode.ENCRYPT}, ${PrivateKeySecurityMode.PROMPT_MAIN}, ${PrivateKeySecurityMode.PROMPT_MAIN_TRANSPORT}, or provider your ${keyName} account with custom presets!`;
-                }
-            }
-            return undefined;
-        };
+        if (oldAccount) {
+            this.logger.info(`Reusing ${getAccountLog(oldAccount)}...`);
+            return ConfigLoader.toConfigFromAccount(oldAccount);
+        }
+        if (newAccount) {
+            this.logger.info(`${getAccountLog(newAccount)} has been provided`);
+            return ConfigLoader.toConfigFromAccount(newAccount);
+        }
 
-        const generateErrorMessage = generateError();
+        const generateErrorMessage = this.resolveGenerateErrorMessage(keyName, privateKeySecurityMode);
 
         const account = await accountResolver.resolveAccount(
             networkType,
@@ -447,7 +442,7 @@ export class ConfigLoader {
         networkType: NetworkType,
     ): Promise<NodeAccount[]> {
         return Promise.all(
-            presetData.nodes!.map((node, index) =>
+            (presetData.nodes || []).map((node, index) =>
                 this.generateNodeAccount(accountResolver, oldAddresses?.nodes?.[index], presetData, index, node, networkType),
             ),
         );
@@ -471,7 +466,7 @@ export class ConfigLoader {
 
     public static loadAssembly(preset: string, assembly: string, workingDir: string): CustomPreset {
         if (BootstrapUtils.isYmlFile(assembly)) {
-            const assemblyFile = join(workingDir, assembly);
+            const assemblyFile = BootstrapUtils.resolveWorkingDirPath(workingDir, assembly);
             if (!existsSync(assemblyFile)) {
                 throw new KnownError(
                     `Assembly '${assembly}' does not exist. Have you provided the right --preset <preset> --assembly <assembly> ?`,
@@ -490,7 +485,7 @@ export class ConfigLoader {
 
     public static loadNetworkPreset(preset: string, workingDir: string): CustomPreset {
         if (BootstrapUtils.isYmlFile(preset)) {
-            const presetFile = join(workingDir, preset);
+            const presetFile = BootstrapUtils.resolveWorkingDirPath(workingDir, preset);
             if (!existsSync(presetFile)) {
                 throw new KnownError(`Preset '${presetFile}' does not exist. Have you provided the right --preset <preset>`);
             }
@@ -555,6 +550,9 @@ export class ConfigLoader {
             if (customPreset) {
                 this.logger.info(`Using custom preset file '${customPreset}'`);
             }
+        }
+        if (!presetData.networkType) {
+            throw new Error('Network Type could not be resolved. Have your provided the right --preset?');
         }
         ConfigLoader.presetInfoLogged = true;
         const presetDataWithDynamicDefaults: ConfigPreset = {
