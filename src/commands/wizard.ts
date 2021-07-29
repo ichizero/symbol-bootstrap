@@ -96,7 +96,7 @@ export default class Wizard extends Command {
         BootstrapUtils.showBanner();
         console.log('Welcome to the Symbol Bootstrap wizard! This command will:');
         console.log(' - Guide you through the configuration process.');
-        console.log(' - Import Paper Wallet seeds.');
+        console.log(' - Import or generate private keys.');
         console.log(` - Create a custom preset and show you the way to launch your node!`);
         console.log();
         const target = flags.target;
@@ -117,7 +117,7 @@ export default class Wizard extends Command {
         if (network == Network.privateNetwork) {
             console.log('For a private network, just run: ');
             console.log('');
-            console.log(`$ symbol-bootstrap start -b ${preset}${assembly ? ` -a ${assembly}` : ''}`);
+            console.log(`$ symbol-bootstrap start -b ${preset} -a ${assembly}`);
             return;
         }
 
@@ -229,20 +229,13 @@ export default class Wizard extends Command {
         console.log();
         console.log(`Once you have finished the custom preset customization, You can use the 'start' to run the node in this machine:`);
         console.log();
-        console.log(
-            `$ symbol-bootstrap start -p ${network} -a ${assembly} -c ${customPresetFile} ${
-                target !== defaultParams.target ? `-t ${target}` : ''
-            }`,
-        );
+        const targetParam = target !== defaultParams.target ? `-t ${target}` : '';
+        console.log(`$ symbol-bootstrap start -c ${customPresetFile} ${targetParam}`);
 
         console.log();
         console.log(`Alternatively, to create a zip file that can be deployed in your node machine you can use the 'pack' command:`);
         console.log();
-        console.log(
-            `$ symbol-bootstrap pack -p ${network} -a ${assembly} -c ${customPresetFile} ${
-                target !== defaultParams.target ? `-t ${target}` : ''
-            }`,
-        );
+        console.log(`$ symbol-bootstrap pack -c ${customPresetFile} ${targetParam}`);
         console.log();
         console.log(
             `Once the target folder is created, Bootstrap will use the protected and encrypted addresses.yml, and preset.yml in inside the target folder.`,

@@ -12,6 +12,8 @@ The changelog format is based on [Keep a Changelog](https://keepachangelog.com/e
 | ---------------- | ------- | ------------------------------------------------------------------ |
 | Symbol Bootstrap | v1.0.8  | [symbol-bootstrap](https://www.npmjs.com/package/symbol-bootstrap) |
 
+-   The `bootstrap` preset is not the default anymore. The name must be provided via --preset or as a custom preset field. 
+-   A 'safe' custom preset is cached in the target folder. It's not required when upgrading the node without a configuration change.
 -   Added `wizard` command.
 -   Added `pack` command.
 -   Explorer `1.1.0` upgrade.
